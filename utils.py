@@ -17,7 +17,7 @@ def parse_label_file(label_file_path):
                 'bbox_2d_max': tuple(float(bbox_2d_dim) for bbox_2d_dim in line_elements[6:8]),
                 'dimensions': tuple(float(dim) for dim in line_elements[8:11]),
                 'centroid': tuple(float(loc) for loc in line_elements[11:14]),
-                'yaw': float(line_elements[14])
+                'rotation_y': float(line_elements[14])
             }
             parsed_labels.append(label)
     return parsed_labels
