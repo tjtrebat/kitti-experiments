@@ -1,3 +1,6 @@
+import random
+
+import cv2
 import torch
 import numpy as np
 
@@ -17,6 +20,17 @@ def perform_detection_and_nms(model, image, det_conf=0.35, nms_threshold=0.25):
     filtered_class_ids = class_ids[nms_indices]
     filtered_scores = scores[nms_indices]
     return filtered_boxes, filtered_class_ids, filtered_scores
+
+
+def draw_detection_output(image, detections):
+    image_with_detections = image.copy()
+    for detection in detections:
+        xmin, ymin, xmax, ymax = map(int, detection["bounding_box"])
+        label = f"{detection['object_name']} ({detection['confidence']:.2f})"
+        color_rgb = tuple(random.randint(0, 255) for _ in range(3))
+        cv2.rectangle(image_with_detections, (xmin, ymin), (xmax, ymax), color_rgb, 2)
+        cv2.putText(image_with_detections, label, (xmin, ymin - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_rgb, 1)
+    return image_with_detections
 
 
 def parse_label_file(label_file_path):
