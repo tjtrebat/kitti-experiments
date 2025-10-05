@@ -4,6 +4,9 @@ import cv2
 import torch
 import numpy as np
 
+from typing import List, Dict
+from collections import Counter
+
 
 def perform_detection_and_nms(model, image, det_conf=0.35, nms_threshold=0.25):
     results = model.predict(source=image, conf=det_conf)
@@ -22,15 +25,54 @@ def perform_detection_and_nms(model, image, det_conf=0.35, nms_threshold=0.25):
     return filtered_boxes, filtered_class_ids, filtered_scores
 
 
-def draw_detection_output(image, detections):
+def draw_detection_output(image, detections, color_rgb=None):
     image_with_detections = image.copy()
     for detection in detections:
         xmin, ymin, xmax, ymax = map(int, detection["bounding_box"])
         label = f"{detection['object_name']} ({detection['confidence']:.2f})"
-        color_rgb = tuple(random.randint(0, 255) for _ in range(3))
+        if color_rgb is None:
+            color_rgb = tuple(random.randint(0, 255) for _ in range(3))
         cv2.rectangle(image_with_detections, (xmin, ymin), (xmax, ymax), color_rgb, 2)
         cv2.putText(image_with_detections, label, (xmin, ymin - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_rgb, 1)
     return image_with_detections
+
+
+def calculate_iou(box1, box2):
+    x1 = max(box1[0], box2[0])
+    y1 = max(box1[1], box2[1])
+    x2 = min(box1[2], box2[2])
+    y2 = min(box1[3], box2[3])
+    intersection = max(0, x2 - x1) * max(0, y2 - y1)
+    area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
+    area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
+    union = area1 + area2 - intersection
+    return intersection / union if union > 0 else 0
+
+
+def evaluate_detections(pred_detections: List[Dict], gt_detections: List[Dict], iou_threshold=0.5):
+    results = Counter()
+    for pred_det in pred_detections:
+        pred_box = pred_det['bounding_box']
+        gt_boxes = [gt_det['bounding_box'] for gt_det in gt_detections]
+        ious = [calculate_iou(pred_box, gt_box) for gt_box in gt_boxes]
+        best_iou = max(ious)
+        matched_gt_idx = ious.index(best_iou)
+        if best_iou >= iou_threshold and pred_det['object_name'] == gt_detections[matched_gt_idx]['object_name']:
+            results['TP'] += 1
+            gt_detections.pop(matched_gt_idx)
+        else:
+            results['FP'] += 1
+    results['FN'] = len(gt_detections)
+    return results
+
+
+def calculate_precision_recall(results):
+    TP = results.get('TP', 0)
+    FP = results.get('FP')
+    FN = results.get('FN')
+    precision = TP / (TP + FP)
+    recall = TP / (TP + FN)
+    return precision, recall
 
 
 def parse_label_file(label_file_path):
@@ -45,8 +87,7 @@ def parse_label_file(label_file_path):
                 'truncated': float(line_elements[1]),
                 'occluded': int(line_elements[2]),
                 'alpha': float(line_elements[3]),
-                'bbox_2d_min': tuple(float(bbox_2d_dim) for bbox_2d_dim in line_elements[4:6]),
-                'bbox_2d_max': tuple(float(bbox_2d_dim) for bbox_2d_dim in line_elements[6:8]),
+                'bbox_2d': tuple(float(bbox_2d_dim) for bbox_2d_dim in line_elements[4:8]),
                 'dimensions': tuple(float(dim) for dim in line_elements[8:11]),
                 'centroid': tuple(float(loc) for loc in line_elements[11:14]),
                 'rotation_y': float(line_elements[14])
