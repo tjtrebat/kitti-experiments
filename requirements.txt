@@ -1,0 +1,12 @@
+open3d
+numpy
+matplotlib
+seaborn
+pandas
+opencv-python
+torch==2.8.0
+torchvision==0.23.0
+torchaudio==2.8.0
+ultralytics
+sahi
+

@@ -1,20 +1,19 @@
 # KITTI Point Cloud Visualization Notebook
 
-This notebook demonstrates how to visualize raw KITTI Velodyne point clouds using Open3D in a Jupyter environment.
+This notebook demonstrates how to visualize raw KITTI Velodyne point clouds using Open3D in a Jupyter environment,  
+and how to visualize detection results from a fine-tuned YOLOv8 model using SAHI for sliced inference.
 
 ---
 
 ## Requirements
 
 - Python ≥ 3.8  
-- Open3D ≥ 0.17  
-- NumPy  
-- Matplotlib (optional, for fallback visualization)
+- Packages listed in `requirements.txt`
 
-Install dependencies:
+Install all dependencies with:
 
 ```bash
-pip install open3d numpy matplotlib
+pip install -r requirements.txt
 ```
 
 ## Running the Notebook
