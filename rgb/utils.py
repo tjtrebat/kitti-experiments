@@ -30,10 +30,9 @@ def draw_detection_output(image, detections, color_rgb=None):
     for detection in detections:
         xmin, ymin, xmax, ymax = map(int, detection["bounding_box"])
         label = f"{detection['object_name']} ({detection['confidence']:.2f})"
-        if color_rgb is None:
-            color_rgb = tuple(random.randint(0, 255) for _ in range(3))
-        cv2.rectangle(image_with_detections, (xmin, ymin), (xmax, ymax), color_rgb, 2)
-        cv2.putText(image_with_detections, label, (xmin, ymin - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_rgb, 1)
+        color = color_rgb if color_rgb else tuple(random.randint(0, 255) for _ in range(3))
+        cv2.rectangle(image_with_detections, (xmin, ymin), (xmax, ymax), color, 2)
+        cv2.putText(image_with_detections, label, (xmin, ymin - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
     return image_with_detections
 
 
@@ -68,10 +67,10 @@ def evaluate_detections(pred_detections: List[Dict], gt_detections: List[Dict], 
 
 def calculate_precision_recall(results):
     TP = results.get('TP', 0)
-    FP = results.get('FP')
-    FN = results.get('FN')
-    precision = TP / (TP + FP)
-    recall = TP / (TP + FN)
+    FP = results.get('FP', 0)
+    FN = results.get('FN', 0)
+    precision = TP / (TP + FP) if (TP + FP) > 0 else 0.0
+    recall = TP / (TP + FN) if (TP + FN) > 0 else 0.0
     return precision, recall
 
 

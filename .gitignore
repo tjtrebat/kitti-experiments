@@ -15,5 +15,5 @@ __pycache__/
 
 # YOLO / model weights
 *.pt
-
+yolo_results/
 
