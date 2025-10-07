@@ -1,7 +1,6 @@
 # KITTI Point Cloud Visualization Notebook
 
-This notebook demonstrates how to visualize raw KITTI Velodyne point clouds using Open3D in a Jupyter environment,  
-and how to visualize detection results from a fine-tuned YOLOv8 model using SAHI for sliced inference.
+This notebook demonstrates how to visualize raw KITTI Velodyne point clouds using Open3D in a Jupyter environment, and how to visualize detection results from a fine-tuned YOLOv8 model using SAHI for sliced inference.
 
 ---
 
