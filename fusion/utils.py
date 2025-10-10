@@ -1,4 +1,6 @@
 import cv2
+import random
+import numpy as np
 
 
 def parse_label_file(label_file_path):
@@ -31,3 +33,26 @@ def draw_detection_output(image, detections, color_rgb=None):
         cv2.rectangle(image_with_detections, (xmin, ymin), (xmax, ymax), color, 2)
         cv2.putText(image_with_detections, label, (xmin, ymin - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
     return image_with_detections
+
+
+def read_velodyne_bin(file_path):
+    data = np.fromfile(file_path, dtype=np.float32)
+    return data.reshape(-1, 4)
+
+
+def parse_calib_file(calib_file_path):
+    calib_keys = ['P0', 'P1', 'P2', 'P3', 'R0','Tr_velo_to_cam', 'Tr_imu_to_velo']
+    calibration_matrices = dict()
+    with open(calib_file_path, "r") as file:
+        calib_lines = file.readlines()
+        for i, key in enumerate(calib_keys):
+            elems = calib_lines[i].split(' ')
+            elems = elems[1:]
+            calib_matrix = np.array(elems, dtype=np.float32)
+            if key == 'R0':
+                calib_matrix_shape = (3, 3)
+            else:
+                calib_matrix_shape = (3, 4)
+            calib_matrix = calib_matrix.reshape(calib_matrix_shape)
+            calibration_matrices[key] = calib_matrix
+    return calibration_matrices
