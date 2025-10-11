@@ -2,6 +2,8 @@ import cv2
 import random
 import numpy as np
 
+from collections import Counter
+
 
 def parse_label_file(label_file_path):
     parsed_labels = []
@@ -56,3 +58,49 @@ def parse_calib_file(calib_file_path):
             calib_matrix = calib_matrix.reshape(calib_matrix_shape)
             calibration_matrices[key] = calib_matrix
     return calibration_matrices
+
+
+def compute_iou(box1, box2):
+    min1, max1 = np.array(box1.min_bound), np.array(box1.max_bound)
+    min2, max2 = np.array(box2.min_bound), np.array(box2.max_bound)
+    intersection_min = np.maximum(min1, min2)
+    intersection_max = np.minimum(max1, max2)
+    intersection_dims = np.maximum(intersection_max - intersection_min, 0)
+    intersection_volume = np.prod(intersection_dims)
+    volume1 = np.prod(max1 - min1)
+    volume2 = np.prod(max2 - min2)
+    union_volume = volume1 + volume2 - intersection_volume
+    return intersection_volume / union_volume if union_volume > 0 else 0
+
+
+def find_matched_gt_box(pred_box, gt_boxes):
+    iou_scores = [compute_iou(pred_box, gt_box) for gt_box in gt_boxes]
+    max_iou_score = max(iou_scores)
+    matched_gt_box = iou_scores.index(max_iou_score)
+    return max_iou_score, matched_gt_box
+
+
+def evaluate_metrics(gt_boxes, pred_boxes, iou_threshold=0.5):
+    results = Counter()
+    matched_gt_boxes = set()
+    for pred_box in pred_boxes:
+        max_iou_score, matched_gt_box = find_matched_gt_box(pred_box, gt_boxes)
+        if max_iou_score >= iou_threshold:
+            if matched_gt_box not in matched_gt_boxes:
+                results['TP'] += 1
+                matched_gt_boxes.add(matched_gt_box)
+            else:
+                results['FP'] += 1
+        else:
+            results['FP'] += 1
+    results['FN'] = len(gt_boxes) - len(matched_gt_boxes)
+    return results
+
+
+def calculate_precision_recall(results):
+    TP = results.get('TP', 0)
+    FP = results.get('FP', 0)
+    FN = results.get('FN', 0)
+    precision = TP / (TP + FP) if (TP + FP) > 0 else 0.0
+    recall = TP / (TP + FN) if (TP + FN) > 0 else 0.0
+    return precision, recall
