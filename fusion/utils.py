@@ -107,60 +107,69 @@ def calculate_precision_recall(results):
     return precision, recall
 
 
-def fit_bev_oriented_bounding_box(points):
-    """
-    points: (N,3) numpy array in the same frame as evaluation (X forward, Y left, Z up)
-    returns: center (x,y,z), extent (l,w,h), yaw (radians), corners_3d (8x3, lower 4 then upper 4)
-    """
-    pts = np.asarray(points)
-    # optional: remove ground / very low points if needed
-    # pts = pts[pts[:,2] > z_threshold]
+def compute_height_bounds(points):
+    z_min, z_max = points[:, 2].min(), points[:, 2].max()
+    return z_min, z_max
 
-    # compute height bounds
-    z_min, z_max = pts[:,2].min(), pts[:,2].max()
-    h = z_max - z_min
 
-    # use only XY for orientation and L/W
-    xy = pts[:, :2]
+def compute_yaw(points):
+    xy = points[:, :2]
     centroid_xy = xy.mean(axis=0)
-
-    # covariance and PCA on XY
     cov = np.cov((xy - centroid_xy).T)
-    eigvals, eigvecs = np.linalg.eigh(cov)  # ascending eigenvalues
-    # principal axis is eigenvector with largest eigenvalue
+    eigvals, eigvecs = np.linalg.eigh(cov)
     principal = eigvecs[:, np.argmax(eigvals)]
-
-    # yaw: angle of principal axis
     yaw = np.arctan2(principal[1], principal[0])
+    return yaw
 
-    # rotate points into principal frame to get extents
-    R = np.array([[np.cos(-yaw), -np.sin(-yaw)],
-                  [np.sin(-yaw),  np.cos(-yaw)]])
-    rotated = (R @ (xy - centroid_xy).T).T
+
+def rotate_xy(points, yaw):
+    R = np.array([[np.cos(yaw), -np.sin(yaw)],
+                  [np.sin(yaw),  np.cos(yaw)]])
+    rotated = (R @ points).T
+    return rotated
+
+
+def rotate_points_and_compute_extents(points, yaw):
+    rotated = rotate_xy(points, yaw)
     l = rotated[:,0].max() - rotated[:,0].min()
     w = rotated[:,1].max() - rotated[:,1].min()
+    return l, w
 
-    # center in XY (use centroid in original frame)
-    center_x, center_y = centroid_xy
-    center_z = (z_min + z_max)/2
 
-    # construct 8 corners (l/2,w/2) in local frame then rotate back, and add z
+def compute_local_corners(extent, yaw):
+    l, w = extent
     local_corners = np.array([
         [ l/2,  w/2],
         [ l/2, -w/2],
         [-l/2, -w/2],
         [-l/2,  w/2]
     ])
-    R_back = np.array([[np.cos(yaw), -np.sin(yaw)],
-                       [np.sin(yaw),  np.cos(yaw)]])
-    corners_xy = (R_back @ local_corners.T).T + np.array([center_x, center_y])
+    return rotate_xy(local_corners.T, yaw)
+
+
+def compute_corners_3d(corners_xy, z_bounds):
+    z_min, z_max = z_bounds
     lower_z = np.full((4,1), z_min)
     upper_z = np.full((4,1), z_max)
     corners_3d = np.vstack([
         np.hstack([corners_xy, lower_z]), 
         np.hstack([corners_xy, upper_z])
     ])
+    return corners_3d
 
+
+def fit_bev_oriented_bounding_box(points):
+    xy = points[:, :2]
+    centroid_xy = xy.mean(axis=0)
+    yaw = compute_yaw(points)
+    l, w = rotate_points_and_compute_extents((xy - centroid_xy).T, -yaw)
+    center_x, center_y = centroid_xy
+    local_corners = compute_local_corners((l, w,), yaw)
+    corners_xy = local_corners + np.array([center_x, center_y])
+    z_min, z_max = compute_height_bounds(points)
+    corners_3d = compute_corners_3d(corners_xy, (z_min, z_max,))
+    center_z = (z_min + z_max) / 2
+    h = z_max - z_min
     return (np.array([center_x, center_y, center_z]),
             np.array([l, w, h]),
             yaw,
