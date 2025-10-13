@@ -54,3 +54,4 @@ def compute_box_3d(label, transform):
     ])
     corners_3d = R @ corners + np.array([[x], [y], [z]])
     return transform_points(corners_3d.T, transform)
+

@@ -1,6 +1,7 @@
 import cv2
 import random
 import numpy as np
+import open3d as o3d
 
 from collections import Counter
 
@@ -106,6 +107,63 @@ def calculate_precision_recall(results):
     return precision, recall
 
 
+def fit_bev_oriented_bounding_box(points):
+    """
+    points: (N,3) numpy array in the same frame as evaluation (X forward, Y left, Z up)
+    returns: center (x,y,z), extent (l,w,h), yaw (radians), corners_3d (8x3, lower 4 then upper 4)
+    """
+    pts = np.asarray(points)
+    # optional: remove ground / very low points if needed
+    # pts = pts[pts[:,2] > z_threshold]
+
+    # compute height bounds
+    z_min, z_max = pts[:,2].min(), pts[:,2].max()
+    h = z_max - z_min
+
+    # use only XY for orientation and L/W
+    xy = pts[:, :2]
+    centroid_xy = xy.mean(axis=0)
+
+    # covariance and PCA on XY
+    cov = np.cov((xy - centroid_xy).T)
+    eigvals, eigvecs = np.linalg.eigh(cov)  # ascending eigenvalues
+    # principal axis is eigenvector with largest eigenvalue
+    principal = eigvecs[:, np.argmax(eigvals)]
+
+    # yaw: angle of principal axis
+    yaw = np.arctan2(principal[1], principal[0])
+
+    # rotate points into principal frame to get extents
+    R = np.array([[np.cos(-yaw), -np.sin(-yaw)],
+                  [np.sin(-yaw),  np.cos(-yaw)]])
+    rotated = (R @ (xy - centroid_xy).T).T
+    l = rotated[:,0].max() - rotated[:,0].min()
+    w = rotated[:,1].max() - rotated[:,1].min()
+
+    # center in XY (use centroid in original frame)
+    center_x, center_y = centroid_xy
+    center_z = (z_min + z_max)/2
+
+    # construct 8 corners (l/2,w/2) in local frame then rotate back, and add z
+    local_corners = np.array([
+        [ l/2,  w/2],
+        [ l/2, -w/2],
+        [-l/2, -w/2],
+        [-l/2,  w/2]
+    ])
+    R_back = np.array([[np.cos(yaw), -np.sin(yaw)],
+                       [np.sin(yaw),  np.cos(yaw)]])
+    corners_xy = (R_back @ local_corners.T).T + np.array([center_x, center_y])
+    lower_z = np.full((4,1), z_min)
+    upper_z = np.full((4,1), z_max)
+    corners_3d = np.vstack([np.hstack([corners_xy, lower_z]), np.hstack([corners_xy, upper_z])])
+
+    return (np.array([center_x, center_y, center_z]),
+            np.array([l, w, h]),
+            yaw,
+            corners_3d)
+
+
 def cross2(v, w):
     return v[0]*w[1] - v[1]*w[0]
 
@@ -157,33 +215,7 @@ def polygon_area(polygon):
     return 0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
 
 
-def kitti_bbox_to_bev(label):
-    h, w, l = label["dimensions"]
-    x, y, z = label["centroid"]
-    ry = label["rotation_y"]
-    x_corners = [ l/2,  l/2, -l/2, -l/2]
-    y_corners = [ w/2, -w/2, -w/2,  w/2]
-    corners = np.vstack([x_corners, y_corners])
-    R = np.array([[np.cos(ry), np.sin(ry)],
-                  [-np.sin(ry), np.cos(ry)]])
-    bev_corners = R @ corners + np.array([[x],[y]])
-    return bev_corners.T  # 4x2 CCW
-
-
-def o3d_bbox_to_bev(obb):
-    corners = np.asarray(obb.get_box_points())
-    bottom_idxs = np.argsort(corners[:,2])[:4]  # lowest Z points
-    bottom_corners = corners[bottom_idxs][:, [0,1]]  # X,Y for BEV
-    centroid = bottom_corners.mean(axis=0)
-    angles = np.arctan2(bottom_corners[:,1]-centroid[1],
-                        bottom_corners[:,0]-centroid[0])
-    ccw_order = np.argsort(angles)
-    return bottom_corners[ccw_order]
-
-
-def compute_bev_iou(gt_label, pred_obb):
-    gt_bev = kitti_bbox_to_bev(gt_label)
-    pred_bev = o3d_bbox_to_bev(pred_obb)
+def compute_bev_iou(pred_bev, gt_bev):
     inter_poly = polygon_clip(pred_bev, gt_bev)
     if len(inter_poly) < 3:
         inter_area = 0.0
@@ -193,3 +225,38 @@ def compute_bev_iou(gt_label, pred_obb):
     if union_area == 0:
         return 0.0
     return inter_area / union_area
+
+
+def find_bev_matched_gt_box(pred_bev, gt_bevs):
+    bev_iou_scores = [compute_bev_iou(pred_bev, gt_bev) for gt_bev in gt_bevs]
+    max_bev_iou_score = max(bev_iou_scores)
+    matched_gt_bev = bev_iou_scores.index(max_bev_iou_score)
+    return max_bev_iou_score, matched_gt_bev
+
+
+def evaluate_bev_metrics(gt_bevs, pred_bevs, iou_threshold=0.5):
+    results = Counter()
+    matched_gt_bevs = set()
+    for pred_bev in pred_bevs:
+        max_bev_iou_score, matched_gt_bev = find_bev_matched_gt_box(pred_bev, gt_bevs)
+        if max_bev_iou_score >= iou_threshold:
+            if matched_gt_bev not in matched_gt_bevs:
+                results['TP'] += 1
+                matched_gt_bevs.add(matched_gt_bev)
+            else:
+                results['FP'] += 1
+        else:
+            results['FP'] += 1
+    results['FN'] = len(gt_bevs) - len(matched_gt_bevs)
+    return results
+
+
+def convert_to_bev(oriented_box):
+    corners = np.asarray(oriented_box.get_box_points())
+    bottom_idxs = np.argsort(corners[:, 2])[:4]
+    bottom_corners = corners[bottom_idxs][:, [0, 1]]
+    centroid = bottom_corners.mean(axis=0)
+    angles = np.arctan2(bottom_corners[:,1]-centroid[1],
+                        bottom_corners[:,0]-centroid[0])
+    ccw_order = np.argsort(angles)
+    return bottom_corners[ccw_order]
