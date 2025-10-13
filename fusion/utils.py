@@ -107,6 +107,11 @@ def calculate_precision_recall(results):
     return precision, recall
 
 
+def calculate_f1_score(precision, recall):
+    f1_score = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+    return f1_score
+
+
 def compute_height_bounds(points):
     z_min, z_max = points[:, 2].min(), points[:, 2].max()
     return z_min, z_max
@@ -246,11 +251,11 @@ def find_bev_matched_gt_box(pred_bev, gt_bevs):
     return max_bev_iou_score, matched_gt_bev
 
 
-def evaluate_bev_metrics(gt_bevs, pred_bevs, iou_threshold=0.5):
+def evaluate_bev_metrics(bbox_bev_labels, bbox_bev_preds, iou_threshold=0.5):
     results = Counter()
     matched_gt_bevs = set()
-    for pred_bev in pred_bevs:
-        max_bev_iou_score, matched_gt_bev = find_bev_matched_gt_box(pred_bev, gt_bevs)
+    for pred_bev in bbox_bev_preds:
+        max_bev_iou_score, matched_gt_bev = find_bev_matched_gt_box(pred_bev, bbox_bev_labels)
         if max_bev_iou_score >= iou_threshold:
             if matched_gt_bev not in matched_gt_bevs:
                 results['TP'] += 1
@@ -259,12 +264,12 @@ def evaluate_bev_metrics(gt_bevs, pred_bevs, iou_threshold=0.5):
                 results['FP'] += 1
         else:
             results['FP'] += 1
-    results['FN'] = len(gt_bevs) - len(matched_gt_bevs)
+    results['FN'] = len(bbox_bev_labels) - len(matched_gt_bevs)
     return results
 
 
-def convert_to_bev(oriented_box):
-    corners = np.asarray(oriented_box.get_box_points())
+def convert_to_bev(bbox):
+    corners = np.asarray(bbox.get_box_points())
     bottom_idxs = np.argsort(corners[:, 2])[:4]
     bottom_corners = corners[bottom_idxs][:, [0, 1]]
     centroid = bottom_corners.mean(axis=0)
@@ -272,3 +277,55 @@ def convert_to_bev(oriented_box):
                         bottom_corners[:,0]-centroid[0])
     ccw_order = np.argsort(angles)
     return bottom_corners[ccw_order]
+
+
+def compute_approx_3d_iou(pred_box, gt_box):
+    pred_bev = convert_to_bev(pred_box)
+    gt_bev = convert_to_bev(gt_box)
+    inter_poly = polygon_clip(pred_bev, gt_bev)
+    if len(inter_poly) < 3:
+        inter_area = 0.0
+    else:
+        inter_area = polygon_area(inter_poly)
+    union_area = polygon_area(gt_bev) + polygon_area(pred_bev) - inter_area
+    if union_area == 0:
+        return 0.0
+    bev_iou = inter_area / union_area
+    pred_center_z = pred_box.center[2]
+    gt_center_z = gt_box.center[2]
+    pred_height = pred_box.extent[2]
+    gt_height = gt_box.extent[2]
+    pred_min_z = pred_center_z - pred_height / 2.0
+    pred_max_z = pred_center_z + pred_height / 2.0
+    gt_min_z = gt_center_z - gt_height / 2.0
+    gt_max_z = gt_center_z + gt_height / 2.0
+    inter_height = max(0.0, min(pred_max_z, gt_max_z) - max(pred_min_z, gt_min_z))
+    union_height = max(pred_max_z, gt_max_z) - min(pred_min_z, gt_min_z)
+    if union_height == 0:
+        return 0.0
+    height_ratio = inter_height / union_height
+    return bev_iou * height_ratio
+
+
+def find_approx_3d_iou_matched_gt_box(pred_box, bbox_labels):
+    approx_3d_iou_scores = [compute_approx_3d_iou(pred_box, gt_box) for gt_box in bbox_labels]
+    max_approx_3d_iou_score = max(approx_3d_iou_scores)
+    matched_gt_box = approx_3d_iou_scores.index(max_approx_3d_iou_score)
+    return max_approx_3d_iou_score, matched_gt_box
+
+
+def evaluate_approx_3d_iou_with_height(bbox_labels, bbox_preds, iou_threshold=0.5):
+    results = Counter()
+    matched_gt_boxes = set()
+    for pred_box in bbox_preds:
+        max_approx_3d_iou_score, matched_gt_box = find_approx_3d_iou_matched_gt_box(pred_box, bbox_labels)
+        if max_approx_3d_iou_score >= iou_threshold:
+            if matched_gt_box not in matched_gt_boxes:
+                results['TP'] += 1
+                matched_gt_boxes.add(matched_gt_box)
+            else:
+                results['FP'] += 1
+        else:
+            results['FP'] += 1
+    results['FN'] = len(bbox_labels) - len(matched_gt_boxes)
+    return results
