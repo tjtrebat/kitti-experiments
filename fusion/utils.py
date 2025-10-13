@@ -156,7 +156,10 @@ def fit_bev_oriented_bounding_box(points):
     corners_xy = (R_back @ local_corners.T).T + np.array([center_x, center_y])
     lower_z = np.full((4,1), z_min)
     upper_z = np.full((4,1), z_max)
-    corners_3d = np.vstack([np.hstack([corners_xy, lower_z]), np.hstack([corners_xy, upper_z])])
+    corners_3d = np.vstack([
+        np.hstack([corners_xy, lower_z]), 
+        np.hstack([corners_xy, upper_z])
+    ])
 
     return (np.array([center_x, center_y, center_z]),
             np.array([l, w, h]),
