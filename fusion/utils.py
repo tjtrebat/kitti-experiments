@@ -1,7 +1,9 @@
-import cv2
 import random
+
+import cv2
+import torch
+import torchvision
 import numpy as np
-import open3d as o3d
 
 from collections import Counter
 
@@ -25,6 +27,28 @@ def parse_label_file(label_file_path):
             }
             parsed_labels.append(label)
     return parsed_labels
+
+
+def perform_detection_and_nms(model, image, det_conf=0.35, nms_threshold=0.25):
+    results = model.predict(
+        source=image, 
+        conf=det_conf, 
+        verbose=False, 
+        show=False
+    )
+    detections = results[0]
+    boxes = detections.boxes.xyxy.cpu().numpy()
+    class_ids = detections.boxes.cls.cpu().numpy().astype(int)
+    scores = detections.boxes.conf.cpu().numpy()
+    nms_indices = torchvision.ops.nms(
+        torch.tensor(boxes),
+        torch.tensor(scores),
+        nms_threshold
+    )
+    filtered_boxes = np.array(boxes[nms_indices])
+    filtered_class_ids = class_ids[nms_indices]
+    filtered_scores = scores[nms_indices]
+    return filtered_boxes, filtered_class_ids, filtered_scores 
 
 
 def draw_detection_output(image, detections, color_rgb=None):

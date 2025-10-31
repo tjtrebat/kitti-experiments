@@ -1,7 +1,9 @@
+import sys
 import time
 import random
 import argparse
 
+import yaml
 import numpy as np
 import pandas as pd
 import open3d as o3d
@@ -11,6 +13,8 @@ import calibration_utils
 
 from pathlib import Path
 from collections import Counter
+
+from ultralytics import YOLO
 
 
 parser = argparse.ArgumentParser(description="Evaluate object proposals")
@@ -29,6 +33,12 @@ parser.add_argument(
     type=int,
     default=None,
     help="Limit the number of samples used for evaluation (default: use all)"
+)
+parser.add_argument(
+    "--yolo-weights",
+    type=str,
+    default=None,
+    help="Path to YOLO pretrained weights to generate 2D bounding box predictions"
 )
 args = parser.parse_args()
 
@@ -56,15 +66,6 @@ OBJECT_EXTENT_STATS = {
         'length': {'mean': 1.763546, 'std': 0.176663}
     }
 }
-
-base = Path.home() / "kitti"
-train_dir = base / "training"
-train_labels_dir = train_dir / "label_2"
-kitti_train_labels = sorted(train_labels_dir.glob("*.txt"))
-velo_dir = train_dir / "velodyne"
-point_cloud_train_files = sorted(velo_dir.glob("*.bin"))
-calib_dir = train_dir / "calib"
-calib_train_files = sorted(calib_dir.glob("*.txt"))
 
 
 def get_point_cloud(points_velo):
@@ -117,12 +118,41 @@ def get_labels(label_file_path):
     return labels
 
 
-def get_mask_frustums(points_uv, labels):
+def load_yolo_model(weights_path: str, yaml_path: str):
+    try:
+        model = YOLO(weights_path)
+    except Exception as e:
+        sys.exit(f"Failed to load YOLO model from '{weights_path}': {e}")
+    try:
+        with open(yaml_path, 'r') as stream:
+            class_names = yaml.safe_load(stream)['names']
+    except FileNotFoundError:
+        sys.exit(f"YAML file for class names not found: {yaml_path}")
+    except yaml.YAMLError as exc:
+        sys.exit(f"Error parsing YAML file '{yaml_path}': {exc}")
+    print(f"Loaded YOLO model from '{weights_path}' with classes: {class_names}")
+    return model, class_names
+
+
+def perform_detection_and_nms(model, image):
+    det_boxes, det_class_ids, det_scores = utils.perform_detection_and_nms(
+        model, 
+        image, 
+        det_conf=0.10, 
+        nms_threshold=0.50
+    )
+    if det_boxes.ndim == 1:
+        det_boxes = np.reshape(det_boxes, (1, 4))
+        det_class_ids = [det_class_ids]
+        det_scores = [det_scores]
+    return det_boxes, det_class_ids, det_scores
+
+
+def get_mask_frustums(points_uv, bbox_2d_labels):
     mask_frustums = []
     u, v = points_uv[:, 0], points_uv[:, 1]
     valid_mask = np.isfinite(u) & np.isfinite(v)
-    for label in labels:
-        xmin, ymin, xmax, ymax = label['bbox_2d']
+    for xmin, ymin, xmax, ymax in bbox_2d_labels:
         mask_frustum = (u >= xmin) & (u <= xmax) & (v >= ymin) & (v <= ymax)
         mask_frustum = mask_frustum & valid_mask
         mask_frustums.append(mask_frustum)
@@ -271,10 +301,10 @@ def get_oriented_bounding_box_proposals(frustum_with_clusters, object_type):
     return proposals
 
 
-def get_oriented_bounding_box_predictions(frustums_with_clusters, labels):
+def get_oriented_bounding_box_predictions(frustums_with_clusters, object_types):
     oriented_bbox_predictions = []
     for i, frustum_with_clusters in enumerate(frustums_with_clusters):
-        object_type = labels[i]['type']
+        object_type = object_types[i]
         proposals = get_oriented_bounding_box_proposals(frustum_with_clusters, object_type)
         oriented_bboxes = get_oriented_bounding_boxes(proposals)
         oriented_bbox_predictions.extend(oriented_bboxes)
@@ -319,13 +349,35 @@ def evaluate_approx_3d_iou_with_height(bbox_labels, bbox_preds):
     return results
 
 
-results = Counter()
-start_time = time.time()
+base = Path.home() / "kitti"
+train_dir = base / "training"
+
+train_labels_dir = train_dir / "label_2"
+kitti_train_labels = sorted(train_labels_dir.glob("*.txt"))
+
+train_img_dir = train_dir / "image_2"
+kitti_images_train = sorted(train_img_dir.glob("*.png"))
+
+velo_dir = train_dir / "velodyne"
+point_cloud_train_files = sorted(velo_dir.glob("*.bin"))
+
+calib_dir = train_dir / "calib"
+calib_train_files = sorted(calib_dir.glob("*.txt"))
 
 dataset_size = len(kitti_train_labels)
 num_samples = args.num_samples or dataset_size
 num_samples = min(num_samples, dataset_size)
 random_indices = random.sample(range(dataset_size), num_samples)
+
+yaml_path = Path.home() / "datasets/kitti/data.yaml"
+if args.yolo_weights:
+    fine_tuned_model, tuned_model_class_names = load_yolo_model(
+        args.yolo_weights, 
+        yaml_path
+    )
+
+results = Counter()
+start_time = time.time()
 
 for analysis_file_index in random_indices:
     bin_path = point_cloud_train_files[analysis_file_index]
@@ -335,12 +387,22 @@ for analysis_file_index in random_indices:
     calib = utils.parse_calib_file(calib_train_files[analysis_file_index])
     points_uv = get_points_uv(cloud_points_in_cam_front, calib)
     labels = get_labels(kitti_train_labels[analysis_file_index])
-    mask_frustums = get_mask_frustums(points_uv, labels)
+    if args.yolo_weights:
+        det_boxes, det_class_ids, _ = perform_detection_and_nms(
+            fine_tuned_model,
+            kitti_images_train[analysis_file_index]
+        )
+        bbox_2d_labels = [box.tolist() for box in det_boxes]
+        object_types = [tuned_model_class_names[class_id] for class_id in det_class_ids]
+    else:
+        bbox_2d_labels = [label['bbox_2d'] for label in labels] 
+        object_types = [label['type'] for label in labels]
+    mask_frustums = get_mask_frustums(points_uv, bbox_2d_labels)
     frustum_points = extract_frustum_points(mask_frustums, cloud_points_in_cam_front)
     frustums_with_clusters = get_frustums_with_clusters(frustum_points)
     Tr_cam_to_velo = get_cam_to_velo_transform(calib)
     if args.oriented:
-        bbox_preds = get_oriented_bounding_box_predictions(frustums_with_clusters, labels)
+        bbox_preds = get_oriented_bounding_box_predictions(frustums_with_clusters, object_types)
         bbox_labels = get_oriented_bounding_box_labels(labels, Tr_cam_to_velo)
     else:
         bbox_preds = get_axis_aligned_bounding_box_predictions(frustums_with_clusters)
@@ -355,7 +417,8 @@ for analysis_file_index in random_indices:
         else:
             cloud_results = evaluate_box_iou(bbox_labels, bbox_preds)
     results.update(cloud_results)
-    
+
+
 elapsed = time.time() - start_time
 print(f"Total evaluation time: {elapsed:.2f} seconds")
 
